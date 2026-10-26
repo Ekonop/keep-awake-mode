@@ -1,0 +1,5 @@
+# user-local install artifacts / editor junk
+*.pkg.tar.zst
+*.log
+.env
+.DS_Store

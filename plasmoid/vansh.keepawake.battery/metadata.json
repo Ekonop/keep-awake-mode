@@ -1,0 +1,31 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "vanshpratapsingh09@gmail.com",
+                "Name": "vansh"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Power & Battery with a Keep-Awake performance mode toggle (Performance Keep-Awake). Fork of the stock battery applet.",
+        "Description[en_GB]": "Power & Battery with a Keep-Awake performance mode toggle (Performance Keep-Awake). Fork of the stock battery applet.",
+        "Icon": "battery-full",
+        "Id": "vansh.keepawake.battery",
+        "License": "LGPL-2.0-or-later",
+        "Name": "Power & Battery (Keep-Awake)",
+        "Name[en_GB]": "Power & Battery (Keep-Awake)",
+        "ServiceTypes": [
+            "Plasma/Applet"
+        ],
+        "Version": "1.0"
+    },
+    "X-Plasma-API": "declarativeappletscript",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationAreaCategory": "Hardware",
+    "X-Plasma-Provides": [
+        "org.kde.plasma.battery",
+        "org.kde.plasma.powermanagement"
+    ],
+    "X-KDE-ParentApp": "org.kde.plasmashell"
+}

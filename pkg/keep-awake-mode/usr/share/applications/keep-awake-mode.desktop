@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Performance Keep-Awake
+GenericName=Toggle keep-awake mode
+Comment=Performance CPU + block sleep/lid-sleep, display may still turn off. Toggle on/off.
+Exec=keep-awake-mode toggle
+Icon=preferences-system-power-management
+Terminal=false
+Categories=Utility;System;
+Keywords=keep;awake;caffeine;stay;sleep;suspend;performance;power;
+X-KDE-Keywords=keep awake,caffeine,no sleep,performance mode
