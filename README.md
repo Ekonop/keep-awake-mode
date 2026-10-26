@@ -32,10 +32,9 @@ the mode is intentionally **per-session** (transient unit dies at logout).
 
 ## Installation
 
-### Arch (PKGBUILD / AUR)
+### Arch (PKGBUILD)
 
 ```sh
-git clone https://github.com/Ekonop/keep-awake-mode
 cd keep-awake-mode
 makepkg -si
 ```
@@ -45,10 +44,12 @@ This installs:
 - `/usr/bin/keep-awake-mode`
 - `/usr/share/plasma/plasmoids/vansh.keepawake.battery/`
 - `/usr/share/applications/keep-awake-mode.desktop` (launcher "Performance Keep-Awake")
-- A systemd user service + timer (`keep-awake-mode.service` /
-  `keep-awake-mode-resume.service`) — see `pkg/`.
 
-After install: `systemctl --user enable --now keep-awake-mode.service`.
+An [AUR](https://aur.archlinux.org) submission is prepared (`.SRCINFO`-ready
+PKGBUILD + `./aur-submit.sh`), but AUR temporarily paused new account
+registration (HTTP 503), so it is not published yet. Once registration
+reopens: `./aur-submit.sh` publishes it, after which
+`yay -S keep-awake-mode` will work.
 
 ### Any distro (user-local, no root)
 
