@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+# keep-awake-mode — "Performance Keep-Awake" special mode for KDE Plasma 6
+#
+# ON : energy profile -> performance  +  block sleep & lid-sleep via systemd-inhibit
+#      (display turn-off is NOT inhibited, so the panel can still blank)
+# OFF: remove the inhibitor and restore the energy profile that was active before ON
+#
+# The stock performance profile / PowerDevil settings are never modified.
+# The state lives in a systemd user transient unit `keep-awake-inhibit`
+# plus a small state file under XDG_STATE_HOME.
+#
+# Extra subcommands for the tray battery replacement (see README):
+#   tray-enable   Replace the stock system-tray battery with the
+#                 vansh.keepawake.battery plasmoid (Keep Awake slider stop)
+#   tray-disable  Restore the stock battery applet
+#   tray-status   Show which battery applet the tray hosts
+#
+# SPDX-License-Identifier: MIT
+set -u
+
+UNIT=keep-awake-inhibit
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/keep-awake-mode"
+STATE_FILE="$STATE_DIR/state"
+REASON="Keep-Awake mode (user $USER)"
+
+usage() {
+    cat <<'EOF'
+usage: keep-awake-mode [on|off [profile]|toggle|status|state|tray-enable|tray-disable|tray-status]
+
+  on                 Enable Keep-Awake: performance profile + block sleep/lid (display may still turn off)
+  off [profile]      Disable Keep-Awake, restore previous profile (or the given one)
+  toggle             Toggle Keep-Awake mode
+  status             Human-readable status
+  state              Prints exactly ON or OFF (for widgets/scripts)
+  tray-enable        Replace the stock system-tray battery with vansh.keepawake.battery
+  tray-disable       Restore the stock system-tray battery applet
+  tray-status        Show which battery applet the tray hosts
+EOF
+}
+
+is_on() {
+    [ "$(systemctl --user is-active "$UNIT" 2>/dev/null)" = "active" ]
+}
+
+start_mode() {
+    if is_on; then
+        echo "keep-awake mode already ON"
+        return 0
+    fi
+    mkdir -p "$STATE_DIR"
+
+    # remember the energy profile we are coming from so OFF can restore it
+    prev="$(powerprofilesctl get 2>/dev/null || true)"
+    [ -n "$prev" ] || prev="balanced"
+
+    # start the inhibitor as a managed transient unit so we can stop it reliably.
+    # `sleep infinity` is the hold-open child process: systemd-inhibit releases
+    # the lock the moment its child exits, so the child must never end.
+    systemctl --user reset-failed "$UNIT" 2>/dev/null || true
+    if ! systemd-run --user --unit="$UNIT" --collect \
+        --description="Keep-Awake (performance)" \
+        systemd-inhibit --what=sleep:handle-lid-switch --why="$REASON" --mode=block \
+        sleep infinity >/dev/null 2>&1; then
+        echo "ERROR: could not start inhibitor (systemd-run failed)" >&2
+        return 1
+    fi
+    # give logind a moment to register the inhibitor
+    sleep 0.3
+    if ! is_on; then
+        echo "ERROR: inhibitor did not come up" >&2
+        return 1
+    fi
+
+    printf 'prev=%s\n' "$prev" > "$STATE_FILE"
+    powerprofilesctl set performance
+
+    notify-send -i preferences-system-power-management \
+        "Keep-Awake mode: ON" \
+        "CPU: performance | sleep & lid-sleep blocked | display may still turn off" 2>/dev/null || true
+    echo "keep-awake mode ON (inhibitor: $UNIT, cpu: performance, restore: $prev)"
+}
+
+stop_mode() {
+    if ! is_on; then
+        [ -n "${1:-}" ] && powerprofilesctl set "$1" 2>/dev/null || true
+        echo "keep-awake mode already OFF"
+        return 0
+    fi
+    prev="balanced"
+    if [ -f "$STATE_FILE" ]; then
+        . "$STATE_FILE" # defines prev
+    fi
+    systemctl --user stop "$UNIT" 2>/dev/null
+    systemctl --user reset-failed "$UNIT" 2>/dev/null || true
+    target="${1:-$prev}"
+    powerprofilesctl set "$target" 2>/dev/null || true
+    rm -f "$STATE_FILE"
+
+    notify-send -i preferences-system-power-management \
+        "Keep-Awake mode: OFF" \
+        "Inhibitor removed | energy profile restored: $target" 2>/dev/null || true
+    echo "keep-awake mode OFF (energy profile restored to: $target)"
+}
+
+status() {
+    if is_on; then
+        prev="balanced"
+        [ -f "$STATE_FILE" ] && . "$STATE_FILE"
+        echo "ON  (energy profile: $(powerprofilesctl get 2>/dev/null || echo '?'), restore: $prev)"
+        systemctl --user --no-pager status "$UNIT" 2>/dev/null | grep -E "Active|systemd-inhibit" | head -3 || true
+    else
+        echo "OFF (energy profile: $(powerprofilesctl get 2>/dev/null || echo '?'))"
+    fi
+}
+
+# machine-readable for the tray widget: prints exactly ON or OFF
+state() {
+    if is_on; then
+        echo "ON"
+    else
+        echo "OFF"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Tray battery replacement
+# ---------------------------------------------------------------------------
+
+# Where the plasmoid package lives (repo checkout, user install, or system install)
+find_plasmoid() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local candidates=(
+        "$script_dir/../plasmoid/vansh.keepawake.battery"   # git checkout layout
+        "$HOME/.local/share/plasma/plasmoids/vansh.keepawake.battery"
+        "/usr/share/plasma/plasmoids/vansh.keepawake.battery"
+    )
+    local c
+    for c in "${candidates[@]}"; do
+        if [ -f "$c/metadata.json" ]; then
+            echo "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+appletsrc() {
+    echo "${PLASMA_APPLETSRC:-$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc}"
+}
+
+# swap the tray battery between stock and our Keep-Awake applet.
+# usage: swap_battery <old-id> <new-id>
+swap_battery() {
+    local file old_id new_id tmp
+    file="$(appletsrc)"
+    old_id="$1"
+    new_id="$2"
+    [ -f "$file" ] || { echo "no $file — nothing to do"; return 0; }
+    tmp="$(mktemp)"
+
+    # 1) every applet plugin= line (both standalone and tray-hosted items)
+    # 2) the tray's item lists (extraItems / knownItems / shownItems)
+    sed -e "s/^plugin=${old_id}$/plugin=${new_id}/" \
+        -e "s/${old_id},/${new_id},/g"       \
+        -e "s/=${old_id}$/=${new_id}/"       \
+        "$file" > "$tmp"
+    # keep a backup the first time we touch it
+    if ! [ -f "$file.keepawake.bak" ]; then
+        cp "$file" "$file.keepawake.bak"
+    fi
+    mv "$tmp" "$file"
+    echo "appletsrc: ${old_id} -> ${new_id}"
+}
+
+tray_enable() {
+    local plasmo
+    plasmo="$(find_plasmoid)" || { echo "ERROR: vansh.keepawake.battery plasmoid not found" >&2; return 1; }
+
+    # user-level install if we are a git checkout and not installed for this user yet
+    if [[ "$plasmo" == *.local/share/plasma/plasmoids/* ]] || [[ "$plasmo" == /usr/share/plasma/plasmoids/* ]]; then
+        : # already installed
+    else
+        local user_dst="$HOME/.local/share/plasma/plasmoids/vansh.keepawake.battery"
+        mkdir -p "$(dirname "$user_dst")"
+        rm -rf "$user_dst"
+        cp -r "$plasmo" "$user_dst"
+        plasmo="$user_dst"
+        echo "installed plasmoid to $user_dst"
+    fi
+
+    swap_battery "org.kde.plasma.battery" "vansh.keepawake.battery"
+    kbuildsycoca6 2>/dev/null || true
+
+    # Write the exact script path into the tray applet's Configuration so the
+    # QML toggle works even if the script is not on plasmashell's PATH.
+    if command -v keep-awake-mode >/dev/null 2>&1; then
+        local cmd
+        cmd="$(command -v keep-awake-mode)"
+        python3 - "$(appletsrc)" "$cmd" <<'PYEOF' || true
+import sys
+file, cmd = sys.argv[1], sys.argv[2]
+lines = open(file).read().split("\n")
+out = []
+target_header = None
+# find the last containment-hosted applet group whose plugin is ours
+for i, line in enumerate(lines):
+    out.append(line)
+    if line.startswith("[Containments]") and i + 2 < len(lines) \
+            and lines[i+1].startswith("immutability=") \
+            and lines[i+2].startswith("plugin=vansh.keepawake.battery"):
+        target_header = line
+if target_header:
+    cfg_header = target_header + "[Configuration]"
+    gen_header = target_header + "[Configuration][General]"
+    if gen_header in lines:
+        # replace command= within the General block
+        gi = lines.index(gen_header)
+        end = gi
+        for j in range(gi + 1, len(lines)):
+            if lines[j].startswith("["):
+                end = j
+                break
+        else:
+            end = len(lines)
+        block = lines[gi:end]
+        if any(x.startswith("command=") for x in block):
+            block = [x if not x.startswith("command=") else f"command={cmd}" for x in block]
+        else:
+            block.append(f"command={cmd}")
+        lines[gi:end] = block
+    elif cfg_header in lines:
+        ci = lines.index(cfg_header)
+        lines.insert(ci + 1, f"[General]")
+        lines.insert(ci + 2, f"command={cmd}")
+    else:
+        ti = lines.index(target_header)
+        lines.insert(ti + 1, "immutability=1")
+        lines.insert(ti + 2, cfg_header)
+        lines.insert(ti + 3, "[General]")
+        lines.insert(ti + 4, f"command={cmd}")
+    open(file, "w").write("\n".join(lines))
+    print(f"wrote command={cmd} into tray applet config")
+PYEOF
+    fi
+
+    # restart plasmashell so the tray reloads with our applet
+    if pgrep -x plasmashell >/dev/null 2>&1; then
+        plasmashell --replace >/dev/null 2>&1 &
+        echo "plasmashell restarting…"
+    fi
+    echo "tray-enable done. The stock battery item is now vansh.keepawake.battery."
+}
+
+tray_disable() {
+    swap_battery "vansh.keepawake.battery" "org.kde.plasma.battery"
+    # drop the user-level plasmoid shipped by user installs
+    if [ -d "$HOME/.local/share/plasma/plasmoids/vansh.keepawake.battery" ]; then
+        rm -rf "$HOME/.local/share/plasma/plasmoids/vansh.keepawake.battery"
+        echo "removed ~/.local/share/plasma/plasmoids/vansh.keepawake.battery"
+    fi
+    kbuildsycoca6 2>/dev/null || true
+    if pgrep -x plasmashell >/dev/null 2>&1; then
+        plasmashell --replace >/dev/null 2>&1 &
+        echo "plasmashell restarting…"
+    fi
+    echo "tray-disable done. The stock battery applet is restored."
+}
+
+tray_status() {
+    if grep -qE "^plugin=vansh\.keepawake\.battery" "$(appletsrc)" 2>/dev/null; then
+        echo "tray battery: vansh.keepawake.battery (Keep-Awake)"
+    else
+        echo "tray battery: org.kde.plasma.battery (stock)"
+    fi
+}
+
+case "${1:-toggle}" in
+    on)          start_mode ;;
+    off)         stop_mode "${2:-}" ;;
+    toggle)      if is_on; then stop_mode; else start_mode; fi ;;
+    status)      status ;;
+    state)       state ;;
+    tray-enable) tray_enable ;;
+    tray-disable) tray_disable ;;
+    tray-status) tray_status ;;
+    -h|--help|help) usage ;;
+    *)           echo "unknown command: $1" >&2; usage >&2; exit 2 ;;
+esac
