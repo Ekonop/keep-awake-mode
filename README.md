@@ -32,6 +32,25 @@ the mode is intentionally **per-session** (transient unit dies at logout).
 
 ## Installation
 
+### Arch — custom pacman repo (easiest)
+
+Add the hosted repo to `/etc/pacman.conf`:
+
+```ini
+[keep-awake-mode]
+SigLevel = Optional TrustAll
+Server = https://ekonop.github.io/keep-awake-mode/pkg
+```
+
+Then:
+
+```sh
+sudo pacman -Sy keep-awake-mode
+```
+
+> Repository is served from GitHub Pages (branch `gh-pages`); the package + db
+> are updated on each release.
+
 ### Arch (PKGBUILD)
 
 ```sh
