@@ -1,4 +1,7 @@
-# user-local install artifacts / editor junk
+# build artifacts
+pkg/
+src/
+keep-awake-mode-*.tar.gz
 *.pkg.tar.zst
 *.log
 .env
