@@ -5,4 +5,4 @@ keep-awake-mode-*.tar.gz
 *.pkg.tar.zst
 *.log
 .env
-.DS_Store
+.DS_Store.SRCINFO
