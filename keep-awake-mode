@@ -268,9 +268,11 @@ tray_disable() {
 }
 
 tray_status() {
-    local hits
-    hits="$(grep -cE "^plugin=vansh\.keepawake\.battery" "$(appletsrc)" 2>/dev/null || echo 0)"
-    echo "tray battery: $([ "${hits:-0}" -gt 0 ] && echo 'vansh.keepawake.battery (Keep-Awake)' || echo 'org.kde.plasma.battery (stock)')"
+    if grep -qE "^plugin=vansh\.keepawake\.battery" "$(appletsrc)" 2>/dev/null; then
+        echo "tray battery: vansh.keepawake.battery (Keep-Awake)"
+    else
+        echo "tray battery: org.kde.plasma.battery (stock)"
+    fi
 }
 
 case "${1:-toggle}" in
