@@ -1,6 +1,6 @@
 # Maintainer: Vansh Pratap Singh <vanshpratapsingh09@gmail.com>
 pkgname=keep-awake-mode
-pkgver=1.0.1
+pkgver=1.0.2
 pkgrel=1
 pkgdesc="Performance Keep-Awake mode for KDE Plasma 6: performance profile + block sleep (display may still turn off), plus a battery applet fork with a Keep-Awake slider stop"
 arch=('any')
