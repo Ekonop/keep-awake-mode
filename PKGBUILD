@@ -7,11 +7,11 @@ arch=('any')
 url="https://github.com/Ekonop/keep-awake-mode"
 license=('MIT' 'LGPL-2.0-or-later')
 depends=('bash' 'systemd' 'power-profiles-daemon' 'plasma-workspace' 'qt6-declarative' 'python')
-source=("$pkgname::git+https://github.com/Ekonop/keep-awake-mode.git#tag=v$pkgver")
+source=("$pkgname-$pkgver::git+https://github.com/Ekonop/keep-awake-mode.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 package() {
-    local src="$srcdir/$pkgname"
+    local src="$srcdir/$pkgname-$pkgver"
 
     # script
     install -Dm755 "$src/keep-awake-mode" \
