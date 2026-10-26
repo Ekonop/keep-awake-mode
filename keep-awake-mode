@@ -2,8 +2,12 @@
 # keep-awake-mode — "Performance Keep-Awake" special mode for KDE Plasma 6
 #
 # ON : energy profile -> performance  +  block sleep & lid-sleep via systemd-inhibit
-#      (display turn-off is NOT inhibited, so the panel can still blank)
-# OFF: remove the inhibitor and restore the energy profile that was active before ON
+#      Display blanking is NOT inhibited (the panel may go blank), but the screen
+#      does not lock: while ON, PowerDevil's LockBeforeTurnOffDisplay and the
+#      KScreenLocker idle Autolock are forced off and reloaded live, so the desktop
+#      keeps running and the hotspot keeps serving.
+# OFF: remove the inhibitor, restore the energy profile and the exact lock
+#      settings (AC/Battery/autolock) that were in effect before ON.
 #
 # The stock performance profile / PowerDevil settings are never modified.
 # The state lives in a systemd user transient unit `keep-awake-inhibit`
@@ -27,7 +31,8 @@ usage() {
     cat <<'EOF'
 usage: keep-awake-mode [on|off [profile]|toggle|status|state|tray-enable|tray-disable|tray-status]
 
-  on                 Enable Keep-Awake: performance profile + block sleep/lid (display may still turn off)
+  on                 Enable Keep-Awake: performance profile + block sleep/lid; the display may
+                    blank, but the screen does NOT lock and the desktop keeps running
   off [profile]      Disable Keep-Awake, restore previous profile (or the given one)
   toggle             Toggle Keep-Awake mode
   status             Human-readable status
@@ -54,13 +59,20 @@ start_mode() {
     [ -n "$prev" ] || prev="balanced"
 
     # start the inhibitor as a managed transient unit so we can stop it reliably.
-    # `sleep infinity` is the hold-open child process: systemd-inhibit releases
-    # the lock the moment its child exits, so the child must never end.
+    # Chain: systemd-inhibit (logind-level block on sleep+lid) wraps
+    # kde-inhibit --power (KDE-level: no PowerDevil auto-suspend; does NOT block
+    # display blanking, which would need --screenSaver) wraps `sleep infinity`,
+    # the hold-open child. systemd-inhibit releases its locks the moment the child
+    # exits, so the child must never end on its own (~='sleep infinity').
+    #
+    # Note: the unit is started BEFORE touching any lock config — if it fails,
+    # nothing else has changed and the user's setup is left pristine.
     systemctl --user reset-failed "$UNIT" 2>/dev/null || true
     if ! systemd-run --user --unit="$UNIT" --collect \
         --description="Keep-Awake (performance)" \
-        systemd-inhibit --what=sleep:handle-lid-switch --why="$REASON" --mode=block \
-        sleep infinity >/dev/null 2>&1; then
+        bash -c 'systemd-inhibit --what=sleep:handle-lid-switch --why="$0" --mode=block \
+            kde-inhibit --power sleep infinity' "$REASON" \
+        >/dev/null 2>&1; then
         echo "ERROR: could not start inhibitor (systemd-run failed)" >&2
         return 1
     fi
@@ -71,13 +83,48 @@ start_mode() {
         return 1
     fi
 
-    printf 'prev=%s\n' "$prev" > "$STATE_FILE"
+    # Suppress the screen lock (unit is up; failures below are non-fatal because
+    # stop_mode restores from the state file written next). Two independent lock
+    # paths can fire on idle in Plasma 6:
+    #   * PowerDevil's DPMS action locks before blanking when
+    #     LockBeforeTurnOffDisplay=true (per-profile; tablets default on)
+    #   * KScreenLocker's [Daemon] Autolock locks on its own idle timer
+    # Save the current values, force both off, then ask PowerDevil / the
+    # screensaver to re-read their config live (refreshStatus -> loadProfile(true),
+    # configure -> locker reload). The display may still blank: the DPMS action's
+    # ChangeScreenSettings policy is NOT inhibited (no --screenSaver any more).
+    lock_ac="$(kreadconfig6 --file powerdevilrc --group 'AC' --group Display --key LockBeforeTurnOffDisplay 2>/dev/null || true)"
+    lock_batt="$(kreadconfig6 --file powerdevilrc --group 'Battery' --group Display --key LockBeforeTurnOffDisplay 2>/dev/null || true)"
+    lock_low="$(kreadconfig6 --file powerdevilrc --group 'LowBattery' --group Display --key LockBeforeTurnOffDisplay 2>/dev/null || true)"
+    autolock="$(kreadconfig6 --file kscreenlockerrc --group Daemon --key Autolock 2>/dev/null || true)"
+    [ -n "$lock_ac" ]   || lock_ac=UNSET
+    [ -n "$lock_batt" ] || lock_batt=UNSET
+    [ -n "$lock_low" ]  || lock_low=UNSET
+    [ -n "$autolock" ]  || autolock=UNSET
+
+    if command -v kwriteconfig6 >/dev/null 2>&1; then
+        kwriteconfig6 --file powerdevilrc --group 'AC' --group Display --key LockBeforeTurnOffDisplay --type bool false
+        kwriteconfig6 --file powerdevilrc --group 'Battery' --group Display --key LockBeforeTurnOffDisplay --type bool false
+        kwriteconfig6 --file powerdevilrc --group 'LowBattery' --group Display --key LockBeforeTurnOffDisplay --type bool false
+        kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock --type bool false
+    fi
+
+    { printf 'prev=%s\nlock_ac=%s\nlock_batt=%s\nlock_low=%s\nautolock=%s\n' \
+        "$prev" "$lock_ac" "$lock_batt" "$lock_low" "$autolock";
+    } > "$STATE_FILE"
+
+    # apply the lock-suppression live (PowerDevil reloads its profile settings,
+    # the screen locker reloads its config)
+    qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
+        org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1 || true
+    qdbus6 org.kde.screensaver /ScreenSaver org.kde.screensaver.configure >/dev/null 2>&1 || true
+
     powerprofilesctl set performance
 
     notify-send -i preferences-system-power-management \
         "Keep-Awake mode: ON" \
-        "CPU: performance | sleep & lid-sleep blocked | display may still turn off" 2>/dev/null || true
-    echo "keep-awake mode ON (inhibitor: $UNIT, cpu: performance, restore: $prev)"
+        "CPU: performance | display may blank but never locks | sleep/lid blocked" 2>/dev/null || true
+    echo "keep-awake mode ON (unit: $UNIT, cpu: performance, restore: $prev, lock suppressed)"
 }
 
 stop_mode() {
@@ -86,19 +133,47 @@ stop_mode() {
         echo "keep-awake mode already OFF"
         return 0
     fi
-    prev="balanced"
+    prev="balanced"; lock_ac=UNSET; lock_batt=UNSET; lock_low=UNSET; autolock=UNSET
     if [ -f "$STATE_FILE" ]; then
-        . "$STATE_FILE" # defines prev
+        . "$STATE_FILE" # defines prev, lock_ac, lock_batt, lock_low, autolock
     fi
     systemctl --user stop "$UNIT" 2>/dev/null
     systemctl --user reset-failed "$UNIT" 2>/dev/null || true
     target="${1:-$prev}"
     powerprofilesctl set "$target" 2>/dev/null || true
+
+    # restore the lock settings that were in effect before ON
+    if command -v kwriteconfig6 >/dev/null 2>&1; then
+        if [ "$lock_ac" = UNSET ]; then
+            kwriteconfig6 --file powerdevilrc --group 'AC' --group Display --key LockBeforeTurnOffDisplay --delete
+        else
+            kwriteconfig6 --file powerdevilrc --group 'AC' --group Display --key LockBeforeTurnOffDisplay --type bool "$lock_ac"
+        fi
+        if [ "$lock_batt" = UNSET ]; then
+            kwriteconfig6 --file powerdevilrc --group 'Battery' --group Display --key LockBeforeTurnOffDisplay --delete
+        else
+            kwriteconfig6 --file powerdevilrc --group 'Battery' --group Display --key LockBeforeTurnOffDisplay --type bool "$lock_batt"
+        fi
+        if [ "$lock_low" = UNSET ]; then
+            kwriteconfig6 --file powerdevilrc --group 'LowBattery' --group Display --key LockBeforeTurnOffDisplay --delete
+        else
+            kwriteconfig6 --file powerdevilrc --group 'LowBattery' --group Display --key LockBeforeTurnOffDisplay --type bool "$lock_low"
+        fi
+        if [ "$autolock" = UNSET ]; then
+            kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock --delete
+        else
+            kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock --type bool "$autolock"
+        fi
+        # reload both daemons so the restored values take effect immediately
+        qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
+            org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1 || true
+        qdbus6 org.kde.screensaver /ScreenSaver org.kde.screensaver.configure >/dev/null 2>&1 || true
+    fi
     rm -f "$STATE_FILE"
 
     notify-send -i preferences-system-power-management \
         "Keep-Awake mode: OFF" \
-        "Inhibitor removed | energy profile restored: $target" 2>/dev/null || true
+        "Inhibitor removed | lock settings restored | energy profile: $target" 2>/dev/null || true
     echo "keep-awake mode OFF (energy profile restored to: $target)"
 }
 

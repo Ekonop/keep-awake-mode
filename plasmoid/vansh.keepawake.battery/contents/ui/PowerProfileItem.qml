@@ -182,7 +182,7 @@ PlasmaComponents3.ItemDelegate {
             onMoved: {
                 const idx = value;
                 if (idx === 3) {
-                    // Keep Awake: block sleep (and lid switch), force performance; display may still turn off
+                    // Keep Awake: block sleep (and lid switch), force performance; display may blank, never locks
                     if (!root.keepAwakeActive) {
                         keepAwakeExec.run("on");
                     }

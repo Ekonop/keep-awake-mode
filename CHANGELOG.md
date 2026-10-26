@@ -4,6 +4,24 @@ All notable changes to **keep-awake-mode** are tracked here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic
 versioning.
 
+## [1.0.3] — 2026-10-27
+
+### Changed
+- Keep-Awake now keeps the desktop fully running while **allowing the display
+  to blank as usual**: the inhibitor chain is now
+  `systemd-inhibit --what=sleep:handle-lid-switch` wrapping
+  `kde-inhibit --power sleep infinity` (dropped `--screenSaver`).
+- The screen meanwhile **never auto-locks**: while ON, the script temporarily
+  sets `LockBeforeTurnOffDisplay=false` in the AC/Battery/LowBattery Display
+  sections of `powerdevilrc` and `Autolock=false` in `kscreenlockerrc`, then
+  reloads both daemons live (`refreshStatus`, `configure`). This closes the two
+  idle lock paths that fired at the same second the display blanked
+  (PowerDevil lock-before-display-off; KScreenLocker idle autolock).
+- OFF restores not only the previous energy profile but the **exact prior lock
+  settings** (including "unset" when the keys did not exist before).
+  Root cause: observed "system sleeps" were actually display blank + auto-lock
+  at 10 min idle while the hotspot and desktop never stopped.
+
 ## [1.0.1] — 2026-10-27
 
 ### Added

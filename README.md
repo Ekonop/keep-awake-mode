@@ -1,15 +1,22 @@
 # Performance Keep-Awake for KDE Plasma 6
 
 A special **"Keep Awake" energy mode** for Plasma 6: switch to the `performance`
-power profile **and** block sleep / lid-sleep while still letting the display turn
-off, so the panel can blank while your background tasks keep running.
+power profile while keeping the desktop fully running — sleep / lid switch and
+PowerDevil auto-suspend are blocked, the display may blank as normal, but the
+screen **never auto-locks**, so hotspot, downloads and background tasks keep
+running until you switch the mode off.
 
 - ON: `powerprofilesctl set performance` → **plus** a `systemd-inhibit` block on
-  `sleep` and `handle-lid-switch`.
-- OFF: restores the energy profile that was active before ON.
+  `sleep` and `handle-lid-switch`, wrapped around `kde-inhibit --power`
+  (no PowerDevil auto-suspend). Display blanking is **not** inhibited.
+- ON also temporarily suppresses both Plasma lock paths so a blanked screen
+  stays **unlocked**: PowerDevil's `LockBeforeTurnOffDisplay` (AC / Battery /
+  LowBattery profiles) and the KScreenLocker `[Daemon] Autolock` idle lock.
+  Both daemons reload live (`refreshStatus` / `configure`).
+- OFF: removes the inhibitor, restores the previously active energy profile **and**
+  the exact lock settings that were in effect before ON.
 - The stock `performance` profile and your PowerDevil settings are **never
   modified** — this is a composed mode on top of them.
-- Display turn-off is **not** inhibited, so your screen can still sleep.
 
 Also ships a **battery applet fork** (`vansh.keepawake.battery`) that puts a
 4th "Keep Awake" stop in the popup's mode slider next to
@@ -19,7 +26,8 @@ Performance / Balanced / Power Saver.
 
 ```
 systemd-run --user --unit=keep-awake-inhibit --collect \
-    systemd-inhibit --what=sleep:handle-lid-switch --mode=block sleep infinity
+    systemd-inhibit --what=sleep:handle-lid-switch --mode=block \
+    kde-inhibit --power sleep infinity
 ```
 
 `sleep infinity` is the **hold-open child**: `systemd-inhibit` releases its lock
@@ -27,8 +35,16 @@ the moment the child exits, so the child must keep running for the inhibitor to
 stay alive. `systemd-run` makes the whole chain a managed transient unit, so
 `systemctl --user stop keep-awake-inhibit` reliably kills it.
 
-State is kept in `~/.local/state/keep-awake-mode/state` (previous profile), and
-the mode is intentionally **per-session** (transient unit dies at logout).
+**Why the lock is suppressed separately:** in Plasma 6 the screen can blank
+without the session sleeping — but two independent lock paths fire on idle
+(PowerDevil's lock-before-display-off, and the KScreenLocker idle autolock).
+While the mode is ON, `keep-awake-mode` writes `LockBeforeTurnOffDisplay=false`
+into the AC/Battery/LowBattery Display sections of `powerdevilrc` and
+`Autolock=false` into `kscreenlockerrc`, then tells PowerDevil and the screen
+locker to reload live. The previous values are remembered in
+`~/.local/state/keep-awake-mode/state` and restored when the mode turns OFF.
+State (previous profile + lock settings) is kept per-session (transient unit
+dies at logout).
 
 ## Installation
 
@@ -90,8 +106,12 @@ that toggles with a single click.
 
    **Performance · Balanced · Power Saver · Keep Awake**
 
-5. Slide the pointer to **Keep Awake**: the laptop stays awake on AC while the
-   display can still turn off. Slide to any other stop to leave Keep-Awake.
+5. Slide the pointer to **Keep Awake**: the desktop stays fully awake on AC —
+   performance profile, sleep/lid and PowerDevil auto-suspend are blocked, the
+   display may blank as usual but the screen never auto-locks (PowerDevil
+   lock-before-display-off and the KScreenLocker idle lock are suppressed for
+   the duration; both are restored when you leave the stop). Slide to any other
+   stop to leave Keep-Awake.
 
 > The applet is a fork of the stock Plasma battery applet with an extra slider
 > stop; it also advertises `X-Plasma-Provides: org.kde.plasma.battery`, so it is
@@ -116,8 +136,9 @@ with `tray-disable` (a backup of the pre-swap file is kept at
   `org.kde.plasma.battery` under the same plugin id — it ships a fork under its
   own id (`vansh.keepawake.battery`) plus `X-Plasma-Provides`.
 - Requires `power-profiles-daemon` (or compatible `powerprofilesctl`) for the
-  profile switch and `systemd` for the inhibitor. Display-lock still works
-  exactly as configured in PowerDevil.
+  profile switch and `systemd` for the inhibitor. While Keep-Awake is ON the
+  screen-lock settings described above are temporarily disabled; when the mode
+  is turned OFF, the exact previous values (including "unset") are restored.
 - Keep-Awake is per-session by design: it does not survive a reboot.
 
 ## Uninstall
