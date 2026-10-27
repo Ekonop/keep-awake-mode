@@ -6,3 +6,7 @@ keep-awake-mode-*.tar.gz
 *.log
 .env
 .DS_Store.SRCINFO
+
+# local agent session notes (never push)
+SESSION-CONTEXT.md
+keep-awake-mode-*/
